@@ -3,12 +3,13 @@ import 'package:flutter/services.dart';
 import 'dart:math' as math;
 import 'package:intl/intl.dart';
 
-
 void main() {
   runApp(const ExpensoApp());
 }
 
-
+// ─────────────────────────────────────────────
+// ENUMS & MODELS
+// ─────────────────────────────────────────────
 
 enum ExpenseCategory { food, transport, shopping, health, entertainment, other }
 
@@ -57,9 +58,58 @@ class Expense {
   });
 }
 
+// ─────────────────────────────────────────────
+// BUDGET SERVICE LAYER
+// Computes aggregated totals group-by-category
+// for the current active budget cycle.
+// ─────────────────────────────────────────────
+
+enum BudgetCycle { week, month }
+
+class BudgetService {
+  /// Returns category → total for expenses within the current [cycle].
+  static Map<ExpenseCategory, double> groupByCategory(
+    List<Expense> expenses, {
+    BudgetCycle cycle = BudgetCycle.month,
+  }) {
+    final now = DateTime.now();
+    final cycleStart = _cycleStart(now, cycle);
+
+    final Map<ExpenseCategory, double> totals = {
+      for (final cat in ExpenseCategory.values) cat: 0,
+    };
+
+    for (final e in expenses) {
+      if (!e.date.isBefore(cycleStart)) {
+        totals[e.category] = (totals[e.category] ?? 0) + e.amount;
+      }
+    }
+    return totals;
+  }
+
+  /// Grand total spent in the current cycle.
+  static double totalForCycle(
+    List<Expense> expenses, {
+    BudgetCycle cycle = BudgetCycle.month,
+  }) {
+    return groupByCategory(expenses, cycle: cycle)
+        .values
+        .fold(0, (sum, v) => sum + v);
+  }
+
+  static DateTime _cycleStart(DateTime now, BudgetCycle cycle) =>
+      switch (cycle) {
+        BudgetCycle.month => DateTime(now.year, now.month, 1),
+        BudgetCycle.week =>
+          now.subtract(Duration(days: now.weekday - 1)),
+      };
+}
+
+// ─────────────────────────────────────────────
+// COLORS
+// ─────────────────────────────────────────────
 
 class AppColors {
-  
   static const darkBg = Color(0xFF0D0D0D);
   static const darkSurface = Color(0xFF1A1A1A);
   static const darkCard = Color(0xFF242424);
@@ -67,7 +117,6 @@ class AppColors {
   static const darkText = Color(0xFFF5F5F5);
   static const darkSubtext = Color(0xFF888888);
 
-  
   static const lightBg = Color(0xFFF7F4EF);
   static const lightSurface = Color(0xFFFFFFFF);
   static const lightCard = Color(0xFFFAF8F5);
@@ -75,12 +124,17 @@ class AppColors {
   static const lightText = Color(0xFF0D0D0D);
   static const lightSubtext = Color(0xFF888888);
 
-  
   static const accent = Color(0xFFFF6B35);
   static const accentGlow = Color(0x33FF6B35);
+
+  /// Shown when budget usage exceeds 80 %.
+  static const warning = Color(0xFFB91C1C);
+  static const warningGlow = Color(0x33B91C1C);
 }
 
-
+// ─────────────────────────────────────────────
+// APP ROOT
+// ─────────────────────────────────────────────
 
 class ExpensoApp extends StatefulWidget {
   const ExpensoApp({super.key});
@@ -113,7 +167,9 @@ class _ExpensoAppState extends State<ExpensoApp> {
   }
 }
 
-
+// ─────────────────────────────────────────────
+// HOME PAGE
+// ─────────────────────────────────────────────
 
 class ExpenseHomePage extends StatefulWidget {
   final bool isDark;
@@ -129,8 +185,7 @@ class ExpenseHomePage extends StatefulWidget {
   State<ExpenseHomePage> createState() => _ExpenseHomePageState();
 }
 
-class _ExpenseHomePageState extends State<ExpenseHomePage>
-    with TickerProviderStateMixin {
+class _ExpenseHomePageState extends State<ExpenseHomePage> {
   final List<Expense> _expenses = [
     Expense(
       id: '1',
@@ -169,41 +224,31 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
     ),
   ];
 
-  late AnimationController _fabController;
-  late AnimationController _headerController;
+  // null = all; non-null = filtered to that category
+  ExpenseCategory? _activeFilter;
 
   Color get bg => widget.isDark ? AppColors.darkBg : AppColors.lightBg;
-  Color get surface =>
-      widget.isDark ? AppColors.darkSurface : AppColors.lightSurface;
   Color get card => widget.isDark ? AppColors.darkCard : AppColors.lightCard;
   Color get border =>
       widget.isDark ? AppColors.darkBorder : AppColors.lightBorder;
   Color get text => widget.isDark ? AppColors.darkText : AppColors.lightText;
   Color get subtext => AppColors.darkSubtext;
 
+  // Delegate aggregation to BudgetService.
+  Map<ExpenseCategory, double> get _categoryTotals =>
+      BudgetService.groupByCategory(_expenses, cycle: BudgetCycle.month);
+
   double get totalSpent =>
-      _expenses.fold(0, (sum, e) => sum + e.amount);
+      BudgetService.totalForCycle(_expenses, cycle: BudgetCycle.month);
 
-  double get budget => 500.0;
+  static const double budget = 500.0;
 
-  @override
-  void initState() {
-    super.initState();
-    _fabController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 300),
-    );
-    _headerController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 800),
-    )..forward();
-  }
+  List<Expense> get _filteredExpenses => _activeFilter == null
+      ? _expenses
+      : _expenses.where((e) => e.category == _activeFilter).toList();
 
-  @override
-  void dispose() {
-    _fabController.dispose();
-    _headerController.dispose();
-    super.dispose();
+  void _toggleFilter(ExpenseCategory cat) {
+    setState(() => _activeFilter = _activeFilter == cat ? null : cat);
   }
 
   void _showAddExpenseSheet() {
@@ -213,9 +258,7 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
       backgroundColor: Colors.transparent,
       builder: (_) => AddExpenseSheet(
         isDark: widget.isDark,
-        onAdd: (expense) {
-          setState(() => _expenses.insert(0, expense));
-        },
+        onAdd: (expense) => setState(() => _expenses.insert(0, expense)),
       ),
     );
   }
@@ -230,8 +273,7 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
       value: widget.isDark
           ? SystemUiOverlayStyle.light
           : SystemUiOverlayStyle.dark,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 400),
+      child: Container(
         color: bg,
         child: Scaffold(
           backgroundColor: Colors.transparent,
@@ -252,97 +294,67 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
     );
   }
 
-  
+  // ── Header ──────────────────────────────────
 
- Widget _buildHeader() {
-  final now = DateTime.now();
-  final dateStr = DateFormat('EEE, dd MMM yyyy').format(now);
+  Widget _buildHeader() {
+    final now = DateTime.now();
+    final dateStr = DateFormat('EEE, dd MMM yyyy').format(now);
 
-  return Padding(
-    padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── App name
-            Text(
-              'EXPENSO ✦',
-              style: TextStyle(
-                color: AppColors.accent,
-                fontSize: 28,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 3,
-                height: 1.0,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'EXPENSO ✦',
+                style: TextStyle(
+                  color: AppColors.accent,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 3,
+                  height: 1.0,
+                ),
               ),
-            ),
-            const SizedBox(height: 4),
-            // ── Welcome text
-            Row(
-              children: [
-                Text(
-                  'WELCOME BACK, ',
-                  style: TextStyle(
-                    color: subtext,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    letterSpacing: 2,
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Text(
+                    'WELCOME BACK, ',
+                    style: TextStyle(
+                      color: subtext,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 2,
+                    ),
                   ),
-                ),
-                Text(
-                  'ANN 🌸',
-                  style: TextStyle(
-                    color: AppColors.accent,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 2,
+                  Text(
+                    'ANN 🌸',
+                    style: TextStyle(
+                      color: AppColors.accent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 2,
+                    ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            // ── Live date with calendar icon
-            GestureDetector(
-              onTap: () async {
-                final picked = await showDatePicker(
-                  context: context,
-                  initialDate: now,
-                  firstDate: DateTime(2023),
-                  lastDate: DateTime(2100),
-                  builder: (context, child) {
-                    return Theme(
-                      data: Theme.of(context).copyWith(
-                        colorScheme: ColorScheme.dark(
-                          primary: AppColors.accent,
-                          surface: AppColors.darkSurface,
-                        ),
-                      ),
-                      child: child!,
-                    );
-                  },
-                );
-                if (picked != null) {
-                  // filter or highlight by date if needed
-                }
-              },
-              child: Container(
+                ],
+              ),
+              const SizedBox(height: 6),
+              Container(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
                   color: AppColors.accent.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(
-                    color: AppColors.accent.withOpacity(0.4),
-                  ),
+                      color: AppColors.accent.withOpacity(0.4)),
                 ),
                 child: Row(
                   children: [
-                    Icon(
-                      Icons.calendar_today_rounded,
-                      color: AppColors.accent,
-                      size: 11,
-                    ),
+                    Icon(Icons.calendar_today_rounded,
+                        color: AppColors.accent, size: 11),
                     const SizedBox(width: 6),
                     Text(
                       dateStr,
@@ -356,170 +368,157 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
                   ],
                 ),
               ),
-            ),
-          ],
-        ),
-        const Spacer(),
-        // ── Dark/Light Toggle
-        _ThemeToggle(
-          isDark: widget.isDark,
-          onToggle: widget.onThemeToggle,
-          borderColor: border,
-          textColor: text,
-        ),
-      ],
-    ),
-  );
-}
-  
-
-  Widget _buildBudgetCard() {
-    final progress = (totalSpent / budget).clamp(0.0, 1.0);
-    final remaining = budget - totalSpent;
-
-    return AnimatedBuilder(
-      animation: _headerController,
-      builder: (context, child) => Transform.translate(
-        offset: Offset(0, 30 * (1 - _headerController.value)),
-        child: Opacity(opacity: _headerController.value, child: child),
-      ),
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(24, 20, 24, 0),
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: AppColors.accent,
-          borderRadius: BorderRadius.circular(4),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.accentGlow,
-              blurRadius: 24,
-              spreadRadius: 4,
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'TOTAL SPENT',
-                      style: TextStyle(
-                        color: Color(0xAAFFFFFF),
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 3,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '\₹${totalSpent.toStringAsFixed(2)}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 36,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: -1,
-                      ),
-                    ),
-                  ],
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.3),
-                    ),
-                  ),
-                  child: Column(
-                    children: [
-                      const Text(
-                        'LEFT',
-                        style: TextStyle(
-                          color: Color(0xCCFFFFFF),
-                          fontSize: 9,
-                          letterSpacing: 2,
-                        ),
-                      ),
-                      Text(
-                        '\₹${remaining.toStringAsFixed(0)}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            
-            Stack(
-              children: [
-                Container(
-                  height: 6,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.3),
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                ),
-                FractionallySizedBox(
-                  widthFactor: progress,
-                  child: Container(
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(3),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  '${(progress * 100).toStringAsFixed(0)}% of budget used',
-                  style: const TextStyle(
-                    color: Color(0xCCFFFFFF),
-                    fontSize: 11,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-                Text(
-                  'Budget: \₹${budget.toStringAsFixed(0)}',
-                  style: const TextStyle(
-                    color: Color(0xCCFFFFFF),
-                    fontSize: 11,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
+            ],
+          ),
+          const Spacer(),
+          _ThemeToggle(
+            isDark: widget.isDark,
+            onToggle: widget.onThemeToggle,
+            borderColor: border,
+            textColor: text,
+          ),
+        ],
       ),
     );
   }
 
-  
+  // ── Budget Card ─────────────────────────────
+  // Banner turns deep crimson when usage > 80 %.
+
+  Widget _buildBudgetCard() {
+    final progress = (totalSpent / budget).clamp(0.0, 1.0);
+    final remaining = budget - totalSpent;
+    final isWarning = progress > 0.80;
+
+    final bannerColor =
+        isWarning ? AppColors.warning : AppColors.accent;
+    final glowColor =
+        isWarning ? AppColors.warningGlow : AppColors.accentGlow;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(24, 20, 24, 0),
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: bannerColor,
+        borderRadius: BorderRadius.circular(4),
+        boxShadow: [
+          BoxShadow(color: glowColor, blurRadius: 24, spreadRadius: 4),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    isWarning ? '⚠  BUDGET WARNING — SLOW DOWN' : 'TOTAL SPENT',
+                    style: const TextStyle(
+                      color: Color(0xAAFFFFFF),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 2,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '₹${totalSpent.toStringAsFixed(2)}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 36,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: -1,
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                      color: Colors.white.withOpacity(0.3)),
+                ),
+                child: Column(
+                  children: [
+                    const Text(
+                      'LEFT',
+                      style: TextStyle(
+                          color: Color(0xCCFFFFFF),
+                          fontSize: 9,
+                          letterSpacing: 2),
+                    ),
+                    Text(
+                      '₹${remaining.toStringAsFixed(0)}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          Stack(
+            children: [
+              Container(
+                height: 6,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+              FractionallySizedBox(
+                widthFactor: progress,
+                child: Container(
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '${(progress * 100).toStringAsFixed(0)}% of budget used',
+                style: const TextStyle(
+                    color: Color(0xCCFFFFFF),
+                    fontSize: 11,
+                    letterSpacing: 0.5),
+              ),
+              Text(
+                'Budget: ₹${budget.toStringAsFixed(0)}',
+                style: const TextStyle(
+                    color: Color(0xCCFFFFFF),
+                    fontSize: 11,
+                    letterSpacing: 0.5),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Category Pills ──────────────────────────
+  // Tap to filter the transaction list; tap again to clear.
+  // Totals come from BudgetService.groupByCategory.
 
   Widget _buildCategoryRow() {
-    final Map<ExpenseCategory, double> catTotals = {};
-    for (final e in _expenses) {
-      catTotals[e.category] = (catTotals[e.category] ?? 0) + e.amount;
-    }
+    final catTotals = _categoryTotals;
 
     return SizedBox(
       height: 80,
@@ -528,35 +527,54 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
         padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
         children: ExpenseCategory.values.map((cat) {
           final total = catTotals[cat] ?? 0;
-          return Container(
-            margin: const EdgeInsets.only(right: 10),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: total > 0
-                  ? cat.color.withOpacity(widget.isDark ? 0.15 : 0.1)
-                  : card,
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(
-                color: total > 0 ? cat.color.withOpacity(0.5) : border,
-                width: 1,
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(cat.emoji, style: const TextStyle(fontSize: 16)),
-                const SizedBox(height: 2),
-                Text(
-                  total > 0 ? '\₹${total.toStringAsFixed(0)}' : cat.label,
-                  style: TextStyle(
-                    color: total > 0 ? cat.color : subtext,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.5,
-                  ),
+          final isActive = _activeFilter == cat;
+
+          return GestureDetector(
+            onTap: () => _toggleFilter(cat),
+            child: Container(
+              margin: const EdgeInsets.only(right: 10),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: isActive
+                    ? cat.color.withOpacity(
+                        widget.isDark ? 0.35 : 0.25)
+                    : total > 0
+                        ? cat.color.withOpacity(
+                            widget.isDark ? 0.15 : 0.10)
+                        : card,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: isActive
+                      ? cat.color
+                      : total > 0
+                          ? cat.color.withOpacity(0.5)
+                          : border,
+                  width: isActive ? 1.5 : 1,
                 ),
-              ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(cat.emoji,
+                      style: const TextStyle(fontSize: 16)),
+                  const SizedBox(height: 2),
+                  Text(
+                    total > 0
+                        ? '₹${total.toStringAsFixed(0)}'
+                        : cat.label,
+                    style: TextStyle(
+                      color: total > 0 || isActive
+                          ? cat.color
+                          : subtext,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
             ),
           );
         }).toList(),
@@ -564,15 +582,21 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
     );
   }
 
-  
+  // ── Transaction List Header ──────────────────
+  // Reflects active filter name + item count;
+  // shows a CLEAR pill when a filter is active.
 
   Widget _buildExpenseListHeader() {
+    final label = _activeFilter != null
+        ? '${_activeFilter!.emoji}  ${_activeFilter!.label.toUpperCase()}'
+        : 'TRANSACTIONS';
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 20, 24, 12),
       child: Row(
         children: [
           Text(
-            'TRANSACTIONS',
+            label,
             style: TextStyle(
               color: text,
               fontSize: 11,
@@ -582,13 +606,16 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
           ),
           const SizedBox(width: 8),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
-              color: AppColors.accent,
+              color: _activeFilter != null
+                  ? _activeFilter!.color
+                  : AppColors.accent,
               borderRadius: BorderRadius.circular(2),
             ),
             child: Text(
-              '${_expenses.length}',
+              '${_filteredExpenses.length}',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 10,
@@ -597,36 +624,56 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
             ),
           ),
           const Spacer(),
-          Text(
-            'SWIPE TO DELETE',
-            style: TextStyle(
-              color: subtext,
-              fontSize: 9,
-              letterSpacing: 2,
+          if (_activeFilter != null)
+            GestureDetector(
+              onTap: () => setState(() => _activeFilter = null),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: border,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                child: Text(
+                  'CLEAR ✕',
+                  style: TextStyle(
+                    color: subtext,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+              ),
+            )
+          else
+            Text(
+              'SWIPE TO DELETE',
+              style: TextStyle(
+                  color: subtext, fontSize: 9, letterSpacing: 2),
             ),
-          ),
         ],
       ),
     );
   }
 
-  
+  // ── Expense List ────────────────────────────
 
   Widget _buildExpenseList() {
-    if (_expenses.isEmpty) {
+    final items = _filteredExpenses;
+    if (items.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text('◈', style: TextStyle(color: subtext, fontSize: 48)),
+            Text('◈',
+                style: TextStyle(color: subtext, fontSize: 48)),
             const SizedBox(height: 12),
             Text(
-              'NO EXPENSES YET',
+              _activeFilter != null
+                  ? 'NO ${_activeFilter!.label.toUpperCase()} EXPENSES'
+                  : 'NO EXPENSES YET',
               style: TextStyle(
-                color: subtext,
-                fontSize: 12,
-                letterSpacing: 3,
-              ),
+                  color: subtext, fontSize: 12, letterSpacing: 3),
             ),
           ],
         ),
@@ -635,9 +682,9 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
 
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 100),
-      itemCount: _expenses.length,
+      itemCount: items.length,
       itemBuilder: (context, index) {
-        final expense = _expenses[index];
+        final expense = items[index];
         return _ExpenseCard(
           expense: expense,
           isDark: widget.isDark,
@@ -651,6 +698,7 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
     );
   }
 
+  // ── FAB ─────────────────────────────────────
 
   Widget _buildFAB() {
     return GestureDetector(
@@ -675,7 +723,9 @@ class _ExpenseHomePageState extends State<ExpenseHomePage>
   }
 }
 
-
+// ─────────────────────────────────────────────
+// THEME TOGGLE
+// ─────────────────────────────────────────────
 
 class _ThemeToggle extends StatelessWidget {
   final bool isDark;
@@ -694,20 +744,18 @@ class _ThemeToggle extends StatelessWidget {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onToggle,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeInOut,
+      child: Container(
         width: 72,
         height: 36,
         padding: const EdgeInsets.all(4),
         decoration: BoxDecoration(
-          color: isDark ? const Color(0xFF1A1A1A) : const Color(0xFFE8E4DF),
+          color:
+              isDark ? const Color(0xFF1A1A1A) : const Color(0xFFE8E4DF),
           borderRadius: BorderRadius.circular(4),
           border: Border.all(color: borderColor),
         ),
         child: Stack(
           children: [
-            // Labels
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -737,12 +785,10 @@ class _ThemeToggle extends StatelessWidget {
                 ),
               ],
             ),
-            // Sliding knob
-            AnimatedAlign(
-              duration: const Duration(milliseconds: 350),
-              curve: Curves.easeInOut,
-              alignment:
-                  isDark ? Alignment.centerRight : Alignment.centerLeft,
+            Align(
+              alignment: isDark
+                  ? Alignment.centerRight
+                  : Alignment.centerLeft,
               child: Container(
                 width: 26,
                 height: 26,
@@ -759,7 +805,9 @@ class _ThemeToggle extends StatelessWidget {
   }
 }
 
-
+// ─────────────────────────────────────────────
+// EXPENSE CARD
+// ─────────────────────────────────────────────
 
 class _ExpenseCard extends StatelessWidget {
   final Expense expense;
@@ -781,13 +829,13 @@ class _ExpenseCard extends StatelessWidget {
   });
 
   String _formatDate(DateTime date) {
-  final now = DateTime.now();
-  final diff = now.difference(date);
-  if (diff.inHours < 1) return 'Just now';
-  if (diff.inHours < 24) return '${diff.inHours}h ago';
-  if (diff.inDays == 1) return 'Yesterday';
-  return DateFormat('dd MMM, EEE').format(date);
-}
+    final now = DateTime.now();
+    final diff = now.difference(date);
+    if (diff.inHours < 1) return 'Just now';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    if (diff.inDays == 1) return 'Yesterday';
+    return DateFormat('dd MMM, EEE').format(date);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -823,7 +871,6 @@ class _ExpenseCard extends StatelessWidget {
         child: IntrinsicHeight(
           child: Row(
             children: [
-              
               Container(
                 width: 4,
                 decoration: BoxDecoration(
@@ -834,13 +881,11 @@ class _ExpenseCard extends StatelessWidget {
                   ),
                 ),
               ),
-              
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Row(
                     children: [
-                      
                       Container(
                         width: 40,
                         height: 40,
@@ -848,17 +893,15 @@ class _ExpenseCard extends StatelessWidget {
                           color: expense.category.color.withOpacity(0.12),
                           borderRadius: BorderRadius.circular(4),
                           border: Border.all(
-                            color: expense.category.color.withOpacity(0.3),
+                            color: expense.category.color
+                                .withOpacity(0.3),
                           ),
                         ),
                         alignment: Alignment.center,
-                        child: Text(
-                          expense.category.emoji,
-                          style: const TextStyle(fontSize: 18),
-                        ),
+                        child: Text(expense.category.emoji,
+                            style: const TextStyle(fontSize: 18)),
                       ),
                       const SizedBox(width: 14),
-                      
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -884,13 +927,12 @@ class _ExpenseCard extends StatelessWidget {
                           ],
                         ),
                       ),
-                    
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.end,
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(
-                            '-\₹${expense.amount.toStringAsFixed(2)}',
+                            '-₹${expense.amount.toStringAsFixed(2)}',
                             style: TextStyle(
                               color: expense.category.color,
                               fontSize: 16,
@@ -912,6 +954,9 @@ class _ExpenseCard extends StatelessWidget {
   }
 }
 
+// ─────────────────────────────────────────────
+// ADD EXPENSE BOTTOM SHEET
+// ─────────────────────────────────────────────
 
 class AddExpenseSheet extends StatefulWidget {
   final bool isDark;
@@ -932,41 +977,41 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
   final _amountController = TextEditingController();
   ExpenseCategory _selectedCategory = ExpenseCategory.food;
 
-  Color get bg => widget.isDark ? AppColors.darkSurface : AppColors.lightSurface;
-  Color get card => widget.isDark ? AppColors.darkCard : AppColors.lightCard;
-  Color get border => widget.isDark ? AppColors.darkBorder : AppColors.lightBorder;
-  Color get text => widget.isDark ? AppColors.darkText : AppColors.lightText;
+  Color get bg =>
+      widget.isDark ? AppColors.darkSurface : AppColors.lightSurface;
+  Color get card =>
+      widget.isDark ? AppColors.darkCard : AppColors.lightCard;
+  Color get border =>
+      widget.isDark ? AppColors.darkBorder : AppColors.lightBorder;
+  Color get text =>
+      widget.isDark ? AppColors.darkText : AppColors.lightText;
   Color get subtext => AppColors.darkSubtext;
 
   void _submit() {
     final title = _titleController.text.trim();
     final amount = double.tryParse(_amountController.text);
-
     if (title.isEmpty || amount == null || amount <= 0) return;
 
-    final expense = Expense(
+    widget.onAdd(Expense(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       title: title,
       amount: amount,
       category: _selectedCategory,
       date: DateTime.now(),
-    );
-
-    widget.onAdd(expense);
+    ));
     Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 300),
+    return Container(
       padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
-      ),
+          bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Container(
         decoration: BoxDecoration(
           color: bg,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+          borderRadius:
+              const BorderRadius.vertical(top: Radius.circular(4)),
           border: Border.all(color: border),
         ),
         padding: const EdgeInsets.all(28),
@@ -974,7 +1019,6 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            
             Center(
               child: Container(
                 width: 40,
@@ -996,23 +1040,20 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
               ),
             ),
             const SizedBox(height: 20),
-
-            
             _buildField(
               controller: _titleController,
               label: 'WHAT DID YOU SPEND ON?',
               hint: 'e.g. Coffee, Uber, Groceries',
             ),
             const SizedBox(height: 16),
-
             _buildField(
               controller: _amountController,
               label: 'AMOUNT',
               hint: '0.00',
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true),
               prefix: Text(
-                '\₹ ',
+                '₹ ',
                 style: TextStyle(
                   color: AppColors.accent,
                   fontSize: 16,
@@ -1021,8 +1062,6 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
               ),
             ),
             const SizedBox(height: 20),
-
-            
             Text(
               'CATEGORY',
               style: TextStyle(
@@ -1039,9 +1078,9 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
               children: ExpenseCategory.values.map((cat) {
                 final selected = _selectedCategory == cat;
                 return GestureDetector(
-                  onTap: () => setState(() => _selectedCategory = cat),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
+                  onTap: () =>
+                      setState(() => _selectedCategory = cat),
+                  child: Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 12, vertical: 8),
                     decoration: BoxDecoration(
@@ -1069,8 +1108,6 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
               }).toList(),
             ),
             const SizedBox(height: 24),
-
-            
             GestureDetector(
               onTap: _submit,
               child: Container(
@@ -1135,7 +1172,8 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
             ),
             decoration: InputDecoration(
               hintText: hint,
-              hintStyle: TextStyle(color: subtext, fontWeight: FontWeight.w400),
+              hintStyle: TextStyle(
+                  color: subtext, fontWeight: FontWeight.w400),
               prefixIcon: prefix != null
                   ? Padding(
                       padding: const EdgeInsets.only(left: 16, top: 12),
@@ -1146,9 +1184,7 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
                   const BoxConstraints(minWidth: 0, minHeight: 0),
               border: InputBorder.none,
               contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 14,
-              ),
+                  horizontal: 16, vertical: 14),
             ),
           ),
         ),
